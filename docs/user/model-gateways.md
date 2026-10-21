@@ -94,6 +94,13 @@ Other kinds include `image`, `video` and `decision`. `workspacePath` can contain
 the full private URL of an existing workspace. `group` names models sharing an
 exclusive slot; match it to the gateway's actual routing policy.
 
+For an OpenAI-compatible runtime such as oMLX, set `metadata.api` to
+`openai-compatible`. Start & use then selects Atomic's OpenAI provider for the
+main model, including its tools and sampling parameters. Omit this field for
+llama.cpp. The native llama.cpp route and embedding provider are retained when
+selecting an OpenAI gateway. Fusion, Solo, Stop and idle leases use the selected
+gateway endpoint in either case.
+
 For an OpenAI-compatible worker, optional `metadata.chatParams` carries the
 model's request settings into Atomic's existing per-model `params` field. Use it
 for sampling, prompt caching or template options required by that model; for

@@ -7,9 +7,11 @@ The Gateways pane of Manage → LLM displays each host's catalog and live state.
 Keyboard and mouse share one handler. The panel uses the existing row window
 and preserves selection across catalog refreshes.
 
-`ModelGatewaysOrchestrator` owns UI refresh and serialized operator actions. Main
-model activation shares the External pane's activation flow and refreshes the
-runtime profile. Worker selection uses an independent OpenAI-compatible provider
+`ModelGatewaysOrchestrator` owns UI refresh and serialized operator actions.
+Native main activation shares the External pane's activation flow and refreshes
+the runtime profile. OpenAI main activation uses the gateway's API metadata and
+existing OpenAI provider. Both persist selection through the gateway domain and
+activate the resulting live provider. Worker selection uses an independent OpenAI-compatible provider
 and the existing Fusion settings owner, avoiding a second native provider that
 silently shares the main model's text client.
 

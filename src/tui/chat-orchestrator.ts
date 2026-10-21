@@ -370,7 +370,6 @@ export class ChatOrchestrator {
         this.detachedTurns.abortAll();
       },
       runtime,
-      runMode: this.runMode,
       refreshProviders: () => this.providers.refresh(),
     });
     this.telegram = new TuiTelegramOrchestrator(runtime, bus);

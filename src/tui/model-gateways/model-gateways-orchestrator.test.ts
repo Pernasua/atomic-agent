@@ -7,7 +7,6 @@ import { getConfig, getUserConfigPath, resetConfigCache, USER_CONFIG_DEFAULTS, w
 import type { ModelGatewayDefinition } from "../../local-llm/gateways/model-gateway-types.js";
 import type { TuiAction } from "../tui-action.js";
 import { persistUserLocalLlmUrl } from "../persist-user-local-models-config.js";
-import { setRunModeInConfig } from "../persist-run-mode.js";
 import { GatewayTaskManager } from "../../local-llm/gateways/gateway-task-manager.js";
 import { ModelGatewaysOrchestrator } from "./model-gateways-orchestrator.js";
 
@@ -37,7 +36,7 @@ describe("Atomic remote model controls", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  async function host(id: string, slow = false, chatParams?: Record<string, unknown>) {
+  async function host(id: string, slow = false, chatParams?: Record<string, unknown>, api?: string) {
     const requests: string[] = [];
     let phase: "starting" | "ready" | null = null;
     let generation = 0;
@@ -45,7 +44,7 @@ describe("Atomic remote model controls", () => {
       const path = request.url ?? "";
       requests.push(`${request.method} ${path}`);
       response.setHeader("Content-Type", "application/json");
-      if (path === "/v1/models") response.end(JSON.stringify({ data: [{ id: "chat", name: `${id} chat`, meta: { llamaswap: { chatParams } } }] }));
+      if (path === "/v1/models") response.end(JSON.stringify({ data: [{ id: "chat", name: `${id} chat`, meta: { llamaswap: { api, chatParams } } }] }));
       else if (path === "/running") response.end(JSON.stringify({ running: phase ? [{ model: "chat", state: phase }] : [] }));
       else if (path === "/upstream/chat/") {
         phase = "starting";
@@ -89,12 +88,10 @@ describe("Atomic remote model controls", () => {
       abortTasks: () => turn.abort(),
       runtime: {
         reloadLlmProvider: async () => {}, reloadLlmProviders: async () => {}, refreshLocalModelProfile: async () => {},
-        providerRegistry: { listIds: () => ["local-llama"] },
+        providerRegistry: { setActive: async () => {} },
         gatewayTasks,
       },
-      runMode: { setMode: async (mode, options) => {
-        setRunModeInConfig({ mode, activeTextProvider: "local-llama", ...options });
-      } }, refreshProviders: () => {},
+      refreshProviders: () => {},
     });
     managers.push(manager);
     return { manager, events, gatewayTasks };
@@ -141,6 +138,20 @@ describe("Atomic remote model controls", () => {
     expect(worker?.userModels?.[0]?.params).toEqual(chatParams);
     expect(worker?.baseUrl).toBe(`${pc.definition.url}/upstream/chat`);
     expect(getConfig().llm?.runMode?.mode).toBe("fusion");
+  });
+
+  it("uses OpenAI transport for a gateway main and preserves it through Fusion and Solo", async () => {
+    const native = await host("native"), flash = await host("flash", false, {}, "openai-compatible");
+    const { manager } = setup([native.definition, flash.definition]);
+    await manager.use("flash", "chat");
+    expect(getConfig().llm?.activeTextProvider).toBe("gateway-main");
+    expect(getConfig().localModels.url).toBe(`${native.definition.url}/upstream/chat`);
+    expect(getConfig().llm?.providers.find(p => p.id === "gateway-main")?.baseUrl).toBe(`${flash.definition.url}/upstream/chat`);
+    await manager.useWorker("flash", "chat");
+    expect(getConfig().llm?.runMode?.fusion?.orchestratorProvider).toBe("gateway-main");
+    await manager.toggleFusion();
+    expect(getConfig().llm?.activeTextProvider).toBe("gateway-main");
+    expect(flash.phase()).toBe("ready");
   });
 
   it("Stop all cancels a pending start and leaves every host unloaded", async () => {

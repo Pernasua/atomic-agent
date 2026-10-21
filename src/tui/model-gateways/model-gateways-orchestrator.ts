@@ -1,15 +1,13 @@
 import { getConfig } from "../../config/index.js";
-import { upsertLlmProvider } from "../../config/llm-provider-commands.js";
 import { resolveLlmConfig } from "../../llm/provider/registry/provider-registry.js";
 import { resolveRunMode } from "../../llm/run-mode/index.js";
-import { gatewayWorkerProvider } from "../../local-llm/gateways/gateway-worker-provider.js";
+import { gatewayMainUrl, selectGatewayModel, selectGatewaySolo } from "../../local-llm/gateways/gateway-selection.js";
 import { ModelGatewayClient } from "../../local-llm/gateways/model-gateway-client.js";
 import { findGatewayTarget } from "../../local-llm/gateways/gateway-target.js";
 import type { GatewayModel, ModelGatewayDefinition, ModelGatewaySnapshot } from "../../local-llm/gateways/model-gateway-types.js";
 import type { AgentRuntime } from "../../runtime/bootstrap.js";
 import type { TuiAction } from "../tui-action.js";
 import { ModelOperationQueue } from "../../local-llm/model-operation-queue.js";
-import type { RunModeOrchestrator } from "../run-mode/run-mode-orchestrator.js";
 
 const WORKER_PROVIDER = "gateway-worker";
 
@@ -18,10 +16,9 @@ export interface ModelGatewaysHooks {
   isBusy(): boolean;
   abortTasks(): void;
   runtime: Pick<AgentRuntime, "reloadLlmProvider" | "reloadLlmProviders" | "refreshLocalModelProfile"> & {
-    providerRegistry: Pick<AgentRuntime["providerRegistry"], "listIds">;
+    providerRegistry: { setActive(id: string): Promise<unknown> };
     gatewayTasks: Pick<AgentRuntime["gatewayTasks"], "cancelAll" | "cancelModel" | "activeCount">;
   };
-  runMode: Pick<RunModeOrchestrator, "setMode">;
   refreshProviders(): void;
 }
 
@@ -84,20 +81,17 @@ export class ModelGatewaysOrchestrator {
       signal.throwIfAborted();
       let solo = false;
       if (model.kind === "llm") {
-        if (!await this.hooks.activate(client.inferenceUrl(modelId))) {
+        const wasFusion = getConfig().llm?.runMode?.mode === "fusion";
+        if (model.api !== "openai-compatible" && !await this.hooks.activate(client.inferenceUrl(modelId))) {
           throw new Error("The model started, but Atomic could not activate its inference endpoint.");
         }
-        await this.hooks.runtime.refreshLocalModelProfile();
-        const config = resolveLlmConfig(getConfig());
-        const mode = resolveRunMode(config);
-        const worker = config.providers.find((provider) => provider.id === mode.workerProviderId);
-        const workerTarget = worker?.baseUrl
-          ? findGatewayTarget(worker.baseUrl, getConfig().localModels.gateways) : null;
-        const peer = models.find(row => row.id === workerTarget?.modelId);
-        if (mode.effective === "fusion" && workerTarget?.gateway.id === gateway.id && workerTarget.modelId !== model.id && (!peer || (!!model.group && model.group === peer.group))) {
-          await this.hooks.runMode.setMode("local");
-          solo = true;
-        }
+        selectGatewayModel(gateway, model, "main", models);
+        const providerId = getConfig().llm!.activeTextProvider;
+        await this.hooks.runtime.reloadLlmProvider(providerId);
+        await this.hooks.runtime.providerRegistry.setActive(providerId);
+        if (model.api !== "openai-compatible") await this.hooks.runtime.refreshLocalModelProfile();
+        this.hooks.refreshProviders();
+        solo = wasFusion && getConfig().llm?.runMode?.mode !== "fusion";
       }
       this.status(`${model.name} is ready on ${gateway.name}${model.kind === "llm" ? " · main model" : ""}.${solo ? " Solo mode: the worker shares this model's exclusive group." : ""}`);
     });
@@ -108,7 +102,7 @@ export class ModelGatewaysOrchestrator {
     await this.perform(async (signal) => {
       const { gateway, model, client, models } = await this.lookup(hostId, modelId, signal);
       if (model.kind !== "llm") throw new Error("Choose a chat model for the worker.");
-      const main = findGatewayTarget(getConfig().localModels.url, getConfig().localModels.gateways);
+      const main = findGatewayTarget(gatewayMainUrl(), getConfig().localModels.gateways);
       if (!main) throw new Error("Choose a gateway main model first.");
       const peer = main.gateway.id === gateway.id ? models.find(row => row.id === main.modelId) : undefined;
       if (peer && peer.id !== model.id && model.group && model.group === peer.group) {
@@ -117,17 +111,8 @@ export class ModelGatewaysOrchestrator {
       this.status(`Starting worker ${model.name} on ${gateway.name}…`);
       await client.start(modelId, signal);
       signal.throwIfAborted();
-      upsertLlmProvider(gatewayWorkerProvider(gateway, model));
-      if (this.hooks.runtime.providerRegistry.listIds().includes(WORKER_PROVIDER)) {
-        await this.hooks.runtime.reloadLlmProvider(WORKER_PROVIDER);
-      } else {
-        await this.hooks.runtime.reloadLlmProviders();
-      }
-      const workers = Math.max(1, Math.min(8, model.parallelSlots ?? 1));
-      await this.hooks.runMode.setMode("fusion", { fusion: {
-        orchestratorProvider: "local-llama", workerProvider: WORKER_PROVIDER,
-        workers, cloudWorkers: workers,
-      } });
+      selectGatewayModel(gateway, model, "worker", models);
+      await this.hooks.runtime.reloadLlmProvider(WORKER_PROVIDER);
       this.hooks.refreshProviders();
       this.status(`Fusion enabled · worker ${model.name} on ${gateway.name}.`);
     });
@@ -137,10 +122,11 @@ export class ModelGatewaysOrchestrator {
     if (this.rejectBusySwitch()) return;
     const config = resolveLlmConfig(getConfig());
     if (resolveRunMode(config).effective === "fusion") {
-      await this.hooks.runMode.setMode("local");
+      selectGatewaySolo();
+      this.hooks.refreshProviders();
       const worker = config.providers.find((provider) => provider.id === WORKER_PROVIDER);
       const target = worker?.baseUrl ? findGatewayTarget(worker.baseUrl, getConfig().localModels.gateways) : null;
-      const main = findGatewayTarget(getConfig().localModels.url, getConfig().localModels.gateways);
+      const main = findGatewayTarget(gatewayMainUrl(), getConfig().localModels.gateways);
       if (target && (target.gateway.id !== main?.gateway.id || target.modelId !== main.modelId)) await this.stop(target.gateway.id, target.modelId);
       this.status("Solo mode · only the main model will run.");
       return;

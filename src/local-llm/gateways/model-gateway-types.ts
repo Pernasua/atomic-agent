@@ -14,6 +14,7 @@ export interface GatewayModel {
   kind: string;
   group: string | null;
   nativeModel: string;
+  api?: "openai-compatible";
   state: GatewayModelState;
   contextSize: number | null;
   parallelSlots?: number;

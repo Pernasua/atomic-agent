@@ -15,13 +15,13 @@ afterEach(async () => {
   })));
 });
 const headers = { authorization: "Bearer test-key", "content-type": "application/json" };
-async function host(id: string, siblings = false) {
+async function host(id: string, siblings = false, api?: string) {
   let loaded = false;
   const requests: string[] = [];
   const server = createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
     res.setHeader("Content-Type", "application/json");
-    if (req.url === "/v1/models") res.end(JSON.stringify({ data: [{ id: "chat", name: id, meta: { llamaswap: { nativeModel: id, parallelSlots: 2, group: "large", chatParams: { temperature: 0.6 } } } }, ...(siblings ? [{ id: "other", meta: { llamaswap: { kind: "llm", group: "large" } } }] : [])] }));
+    if (req.url === "/v1/models") res.end(JSON.stringify({ data: [{ id: "chat", name: id, meta: { llamaswap: { api, nativeModel: id, parallelSlots: 2, group: "large", chatParams: { temperature: 0.6 } } } }, ...(siblings ? [{ id: "other", meta: { llamaswap: { kind: "llm", group: "large" } } }] : [])] }));
     else if (req.url === "/running") res.end(JSON.stringify({ running: loaded ? [{ model: "chat", state: "ready" }] : [] }));
     else if (req.url === "/upstream/chat/") { loaded = true; res.writeHead(404).end("{}"); }
     else if (req.url?.startsWith("/api/models/unload")) { loaded = false; res.end("{}"); }
@@ -52,6 +52,28 @@ it("requires authentication and lists remote models without loading them", async
   expect(await response.json()).toMatchObject({ hosts: [{ models: [{ state: "stopped" }] }] });
   expect(m5.loaded()).toBe(false);
   expect(m5.requests.every(path => path === "GET /v1/models" || path === "GET /running")).toBe(true);
+});
+
+it("selects an OpenAI gateway as main, preserves it through Fusion and Solo, and switches back to native", async () => {
+  const flash = await host("flash", false, "openai-compatible"), native = await host("native");
+  await configure(flash, native);
+  expect((await action({ action: "start", hostId: "flash", modelId: "chat", role: "main" })).status).toBe(200);
+  expect(getConfig().llm?.activeTextProvider).toBe("gateway-main");
+  expect(harness.runtime.providerRegistry.activeTextProviderId).toBe("gateway-main");
+  expect(getConfig().llm?.providers.find(p => p.id === "gateway-main")).toMatchObject({
+    kind: "openai-compatible", baseUrl: flash.definition.url + "/upstream/chat", defaultChatModel: "flash",
+    userModels: [{ params: { cache_prompt: true, temperature: 0.6 } }],
+  });
+  expect(getConfig().llm?.providers.find(p => p.id === "local-llama")?.kind).toBe("llama-server");
+  expect(flash.requests.some(path => /props|slots|apply-template/.test(path))).toBe(false);
+  expect((await action({ action: "start", hostId: "native", modelId: "chat", role: "worker" })).status).toBe(200);
+  expect(getConfig().llm?.runMode?.fusion?.orchestratorProvider).toBe("gateway-main");
+  expect((await action({ action: "solo" })).status).toBe(200);
+  expect(getConfig().llm?.activeTextProvider).toBe("gateway-main");
+  expect(flash.loaded()).toBe(true); expect(native.loaded()).toBe(false);
+  expect((await action({ action: "start", hostId: "native", modelId: "chat", role: "main" })).status).toBe(200);
+  expect(getConfig().llm?.activeTextProvider).toBe("local-llama");
+  expect(harness.runtime.providerRegistry.activeTextProviderId).toBe("local-llama");
 });
 
 it("selects the real main and worker routes and returns to Solo without starting a local managed server", async () => {

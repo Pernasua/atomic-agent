@@ -79,6 +79,7 @@ export class ModelGatewayClient {
         kind: string(details.kind, "llm"),
         group: typeof details.group === "string" ? details.group : null,
         nativeModel: string(details.nativeModel, id),
+        ...(details.api === "openai-compatible" ? { api: "openai-compatible" as const } : {}),
         state: process?.state ?? "stopped",
         contextSize: number(details.contextSize),
         parallelSlots: Number.isInteger(details.parallelSlots) && Number(details.parallelSlots) >= 1 && Number(details.parallelSlots) <= 32 ? Number(details.parallelSlots) : 1,

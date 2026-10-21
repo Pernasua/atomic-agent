@@ -4,7 +4,7 @@ import { resolveRunMode } from "../llm/run-mode/index.js";
 import { ModelGatewayClient } from "../local-llm/gateways/model-gateway-client.js";
 import { findGatewayTarget } from "../local-llm/gateways/gateway-target.js";
 import { gatewayWorkerProvider } from "../local-llm/gateways/gateway-worker-provider.js";
-import { selectGatewayModel, selectGatewaySolo } from "../local-llm/gateways/gateway-selection.js";
+import { gatewayMainUrl, selectGatewayModel, selectGatewaySolo } from "../local-llm/gateways/gateway-selection.js";
 import { readJsonBody, sendJson, type HttpHandler } from "./request-context.js";
 import type { GatewayModel } from "../local-llm/gateways/model-gateway-types.js";
 import type { UserLlmProviderEntry } from "../config/llm-config.js";
@@ -58,7 +58,7 @@ export function createModelGatewayHandlers(): { list: HttpHandler; action: HttpH
         const target = worker?.baseUrl ? findGatewayTarget(worker.baseUrl, getConfig().localModels.gateways) : null;
         selectGatewaySolo();
         await ctx.runtime.reloadLlmProviders();
-        const main = findGatewayTarget(getConfig().localModels.url, getConfig().localModels.gateways);
+        const main = findGatewayTarget(gatewayMainUrl(), getConfig().localModels.gateways);
         if (target && (target.gateway.id !== main?.gateway.id || target.modelId !== main.modelId)) await new ModelGatewayClient(target.gateway).stop(target.modelId, signal);
         return { ok: true };
       }, { cancelled: true });
@@ -79,7 +79,7 @@ export function createModelGatewayHandlers(): { list: HttpHandler; action: HttpH
       if (action === "stop") { await client.stop(modelId, signal); return { ok: true }; }
       if (role === "worker") {
         if (model.kind !== "llm") throw new Error("Choose a chat model for the worker");
-        const main = findGatewayTarget(config.localModels.url, config.localModels.gateways);
+        const main = findGatewayTarget(gatewayMainUrl(), config.localModels.gateways);
         if (!main) throw new Error("Choose a main model first");
         const mainModel = main.gateway.id === gateway.id ? models.find(row => row.id === main.modelId) : undefined;
         if (mainModel && mainModel.id !== model.id && model.group && model.group === mainModel.group) throw new Error("Main and worker models share an exclusive group; share the main model or choose a compatible model");
@@ -87,8 +87,10 @@ export function createModelGatewayHandlers(): { list: HttpHandler; action: HttpH
       await client.start(modelId, signal); signal.throwIfAborted();
       if (model.kind === "llm") {
         selectGatewayModel(gateway, model, role === "worker" ? "worker" : "main", models);
-        await ctx.runtime.reloadLlmProviders();
-        if (role !== "worker") await ctx.runtime.refreshLocalModelProfile();
+        const providerId = role === "worker" ? "gateway-worker" : getConfig().llm!.activeTextProvider;
+        await ctx.runtime.reloadLlmProvider(providerId);
+        if (role !== "worker") await ctx.runtime.providerRegistry.setActive(providerId);
+        if (role !== "worker" && model.api !== "openai-compatible") await ctx.runtime.refreshLocalModelProfile();
         signal.throwIfAborted();
       }
       return { ok: true, model, url: client.inferenceUrl(modelId), workerProvider: model.kind === "llm" ? gatewayWorkerProvider(gateway, model) : null };

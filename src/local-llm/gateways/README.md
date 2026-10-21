@@ -18,6 +18,13 @@ weight size, workspace link, idle policy and exclusive group. Atomic requires
 Stop before starting another model in that group. See
 [operator configuration](../../../docs/user/model-gateways.md).
 
+Optional metadata `api: openai-compatible` selects the existing OpenAI provider
+for main inference. Native models keep `local-llama`; OpenAI gateway mains use
+`gateway-main` without replacing the native route or embedding provider.
+Selection persists the active provider and Fusion seats together; callers
+rebuild the selected provider and activate it in the live registry. Status and
+leases continue to use the gateway lifecycle, independent of inference API.
+
 `GatewayTaskManager` owns task leases. The shared runtime prepares providers for
 each actual turn, including scheduled turns and pinned Fusion workers. Leases
 keep models warm during long tools, honor cancellation, and end with the turn.
